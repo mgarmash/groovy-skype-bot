@@ -1,0 +1,10 @@
+{
+    "config": {
+        "inetAddr": "127.0.0.1",
+        "port": 8963,
+        "pemFileName": "gbot.pem",
+        "login": "bot-login",
+        "password": "bot-pass",
+        "timerPeriod": 5000
+    }
+}
