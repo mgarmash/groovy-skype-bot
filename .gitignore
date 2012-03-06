@@ -1,2 +1,5 @@
 *.iml
 .idea
+*.der
+*.pem
+linux-x86-skypekit-novideo
