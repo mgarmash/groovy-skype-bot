@@ -1,4 +1,3 @@
-@Grab(group='org.codehaus.gpars', module='gpars', version='0.12')
 import com.skype.ipc.Transport
 import com.skype.api.Account
 import com.skype.api.Conversation
@@ -13,34 +12,30 @@ import com.skype.api.Transfer
 import com.skype.api.Participant
 import groovy.io.FileType
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
-import groovyx.gpars.GParsPool
 import groovy.json.JsonBuilder
 import groovy.json.JsonSlurper
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class Gbot {
+    private dataPath = './data'
+    private scriptsPath = './scripts'
+    private scripts = [:]
     private Skype skype;
     private Transport transport
     private Account account
-    private listenerByScriptMap = new ConcurrentHashMap()
-    private def config
-    private def dataPath = './data'
-    private def notifyList = new CopyOnWriteArrayList()
+    private listenersByScriptName = new ConcurrentHashMap()
+    private engine
+    private config
+    ExecutorService executorService
 
-    class PublishTimerEvent extends TimerTask{
-        @Override
-        void run() {
-            publish([type:'TIMER', conversations: notifyList])
-        }
-    }
 
-    Gbot() {
+    def init(globalListener) {
         def data = loadData('gbot')
         config = data.config
         skype = new Skype()
-    }
+        executorService = Executors.newFixedThreadPool(10);
 
-    def init(globalListener) {
         PemReader donkey = new PemReader(config.pemFileName)
         X509Certificate c = donkey.getCertificate()
         PrivateKey p = donkey.getKey()
@@ -67,22 +62,40 @@ class Gbot {
 
         skype.RegisterListener(Skype.getmoduleid(), globalListener)
 
-        Timer timer = new Timer();
-        timer.scheduleAtFixedRate(new PublishTimerEvent(), config.timerPeriod, config.timerPeriod)
+        engine = new GroovyScriptEngine(scriptsPath)
+        engine.getConfig().setMinimumRecompilationInterval(0)
+
+        new File(scriptsPath).eachFileMatch(FileType.FILES, ~/.*\.groovy/) { file ->
+            loadScript(file)
+        }
+
+    }
+
+    private void loadScript(File file) {
+        println "loading ${file.name}"
+        def scriptClass = engine.loadScriptByName(file.name)
+        def scriptInstance = scriptClass.newInstance()
+        scripts.put(file.name, scriptInstance)
+        def listeners = scriptInstance.init(this)
+        listenersByScriptName[file.name] = listeners
+        println "loaded ${file.name}"
     }
 
     def publish(event){
-        GParsPool.withPool() {
-            listenerByScriptMap.keySet().each { scriptName ->
-                listenerByScriptMap[scriptName][event.type].each { listener ->
-                    listener.callAsync(event);
-                }
+        listenersByScriptName.keySet().each { scriptName ->
+            listenersByScriptName[scriptName][event.type].each { listener ->
+                executorService.submit(new Runnable(){
+                    void run() {
+                        listener.call(event);
+                    }
+                })
             }
         }
     }
 
+
     def registerListeners(scriptName, listenerMap) {
-        listenerByScriptMap[scriptName] = listenerMap
+        listenersByScriptName[scriptName] = listenerMap
     }
 
     def sendMessage(conversation, message){
@@ -172,28 +185,7 @@ globalListener = new GlobalListener(bot: bot)
 
 bot.init(globalListener)
 
-
-
-String pluginRoot = './plugins'
-def reloadPeriod = 5000
-
-def engine = new GroovyScriptEngine(pluginRoot)
-engine.getConfig().setMinimumRecompilationInterval(0);
-def plugins = [:]
-def dir = new File(pluginRoot)
-
 while (true) {
-    dir.eachFileRecurse(FileType.FILES) { file ->
-        if (!plugins.containsKey(file.name) || ((new Date()).time - file.lastModified() <= reloadPeriod)) {
-            println "loading ${file.name}"
-            scriptClass = engine.loadScriptByName(file.name)
-            scriptInstance = scriptClass.newInstance()
-            plugins.put(file.name, scriptInstance)
-            def listeners = scriptInstance.init(bot)
-            bot.registerListeners(file.name, listeners)
-            println "loaded ${file.name}"
-        }
-    }
-    sleep(reloadPeriod)
+    sleep(1000)
 }
 
